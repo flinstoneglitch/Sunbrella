@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SUNBRELLA</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; font-family: 'Georgia', serif; background: #1a0f1f; }
+  #game { position: relative; width: 100vw; height: 100vh; overflow: hidden; cursor: none;
+    background: #4a4e63; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .panel { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; color: #fff7e8;
+    background: rgba(26,15,31,0.55); backdrop-filter: blur(3px); padding: 24px; z-index: 10; }
+  .panel h1 { font-size: clamp(40px, 12vw, 88px); letter-spacing: 0.12em; font-weight: 400;
+    text-shadow: 0 0 18px rgba(255,90,40,0.6), 3px 3px 0 #2a1530; color: #ffd56b; }
+  .panel p { font-size: clamp(15px, 4vw, 19px); max-width: 32ch; line-height: 1.5; margin-top: 16px; color: #ffeccb; }
+  .panel .sub { font-size: clamp(12px,3.4vw,15px); opacity: 0.8; margin-top: 22px; font-style: italic; }
+  .btn { margin-top: 30px; padding: 14px 38px; font-family: inherit; font-size: 20px; letter-spacing: 0.08em;
+    color: #2a1530; background: #ffd56b; border: none; border-radius: 2px; cursor: pointer;
+    box-shadow: 4px 4px 0 #b83218; transition: transform 0.08s, box-shadow 0.08s; }
+  .btn:active { transform: translate(3px,3px); box-shadow: 1px 1px 0 #b83218; }
+
+  #hud { position: absolute; top: 0; left: 0; right: 0; padding: 14px 18px; z-index: 5;
+    display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none;
+    color: #fff7e8; text-shadow: 1px 1px 3px rgba(0,0,0,0.6); }
+  #order { display: flex; flex-direction: column; gap: 6px; }
+  #order .label { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.85; }
+  #swatches { display: flex; gap: 8px; }
+  .swatch { width: 30px; height: 30px; border-radius: 50% 50% 50% 0; transform: rotate(45deg);
+    border: 2px solid rgba(255,255,255,0.5); position: relative; transition: opacity 0.3s; }
+  .swatch.done { opacity: 0.28; }
+  .swatch .cnt { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    transform: rotate(-45deg); font-size: 13px; font-weight: bold; color: #fff; text-shadow: 0 0 3px #000; }
+  #score { text-align: right; }
+  #score .big { font-size: 30px; font-weight: bold; color: #ffd56b; }
+  #score .sm { font-size: 12px; letter-spacing: 0.1em; opacity: 0.85; }
+  #lives { margin-top: 4px; font-size: 18px; letter-spacing: 2px; }
+
+  #flash { position: absolute; inset: 0; pointer-events: none; z-index: 4; opacity: 0;
+    background: radial-gradient(circle at center, rgba(255,213,107,0.35), transparent 65%); }
+  .bonusText { position: absolute; z-index: 6; pointer-events: none; font-weight: bold;
+    font-size: 22px; color: #fff7e8; text-shadow: 0 0 6px rgba(0,0,0,0.7); }
+</style>
+</head>
+<body>
+<div id="game">
+  <canvas id="cv"></canvas>
+  <div id="hud">
+    <div id="order"><span class="label">Bouquet order</span><div id="swatches"></div></div>
+    <div id="score"><div class="big" id="scoreVal">0</div><div class="sm">BLOOMS</div><div id="lives"></div></div>
+  </div>
+  <div id="flash"></div>
+  <div class="panel" id="startPanel">
+    <h1>SUNBRELLA</h1>
+    <p>The colored rain is falling over the flower district. Catch the petals your bouquet order needs — and let the wrong colors slip past.</p>
+    <p class="sub">Move your umbrella with mouse, touch, or ← → keys</p>
+    <button class="btn" id="startBtn">Open the shop</button>
+  </div>
+  <div class="panel" id="overPanel" style="display:none;">
+    <h1 id="overTitle">Closed up</h1>
+    <p id="overMsg"></p>
+    <button class="btn" id="againBtn">Open again</button>
+  </div>
+</div>
+<script>
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+let W, H, DPR;
+function resize(){ DPR = Math.min(window.devicePixelRatio||1, 2); W = window.innerWidth; H = window.innerHeight;
+  cv.width = W*DPR; cv.height = H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); }
+window.addEventListener('resize', ()=>{ resize(); if(typeof buildCity==='function') buildCity(); }); resize();
+
+// Florist palette — colors chosen to read against the painterly sky
+const PALETTE = [
+  { name:'poppy',     c:'#e83b2e' },
+  { name:'marigold',  c:'#ffb22e' },
+  { name:'iris',      c:'#6a4ec9' },
+  { name:'cornflower',c:'#3a7bd5' },
+  { name:'fern',      c:'#3fae5a' },
+  { name:'fuchsia',   c:'#e84393' },
+];
+
+let state = 'start';
+let umb = { x: 0, w: 120, y: 0 };
+let drops = [], bonuses = [], floaters = [];
+let order = [], score = 0, spawnT = 0, spawnRate = 52, fallSpeed = 2.4, ordersFilled = 0;
+// Growing flower meter: petals fill around the outside, center blooms last.
+// Each completed bloom banks one mistake-shield. PETALS_PER = catches to bloom.
+const PETALS_PER = 8;
+let flowerPetals = 0;   // 0..PETALS_PER (petals, then center)
+let shields = 0;        // banked mistake-shields
+let bloomPulse = 0;     // animation when a flower completes
+let umbColor = '#e83b2e';   // current umbrella color = next needed bouquet color (Option B)
+let freeCatch = 0;          // frames remaining of "catch anything" bonus mode (Option C burst)
+let level = 1;              // current level
+let levelQuota = 3;         // bouquets needed to fill this level's delivery
+let levelProgress = 0;      // bouquets completed this level
+let dawnTime = 0;           // current dawn progress (counts up)
+let dawnLimit = 60*45;      // frames until full daylight (~45s at 60fps), generous
+// Frog delivery transition
+let frog = { active:false, phase:'', x:0, t:0, style:1 };  // cart-pulling frog
+let collectedThisLevel = [];   // colors gathered this level, for the basket
+
+function newOrder(){
+  const n = 2 + Math.min(3, Math.floor(ordersFilled/2)); // grows 2->5
+  const pool = [...PALETTE].sort(()=>Math.random()-0.5).slice(0, Math.min(n, PALETTE.length));
+  order = pool.map(p => ({ ...p, need: 1 + Math.floor(Math.random()*2), got: 0 }));
+  renderOrder();
+}
+function renderOrder(){
+  const el = document.getElementById('swatches'); el.innerHTML = '';
+  order.forEach(o => {
+    const d = document.createElement('div'); d.className = 'swatch' + (o.got>=o.need?' done':'');
+    d.style.background = o.c;
+    const c = document.createElement('div'); c.className='cnt'; c.textContent = Math.max(0,o.need-o.got);
+    d.appendChild(c); el.appendChild(d);
+  });
+}
+function orderColors(){ return order.filter(o=>o.got<o.need).map(o=>o.c); }
+
+function reset(){
+  score=0; ordersFilled=0; drops=[]; bonuses=[]; floaters=[];
+  dawnTime=0; dawnLimit=60*45;
+  flowerPetals=0; shields=0; bloomPulse=0; streetFlowers=[];
+  level=1; levelQuota=3; levelProgress=0; collectedThisLevel=[];
+  frog={active:false, phase:'', x:0, t:0, style:1};
+  spawnRate=52; fallSpeed=2.4; umb.x=W/2; umb.y=H-70; umb.w=Math.max(90, Math.min(150, W*0.22));
+  newOrder(); updateHUD();
+}
+function updateHUD(){ document.getElementById('scoreVal').textContent=score;
+  document.getElementById('lives').textContent='Level '+level; }
+
+function spawnDrop(){
+  // 78% chance the drop is a color the order still needs, so it stays fair & fun
+  const needed = orderColors();
+  let color;
+  if(needed.length && Math.random()<0.62){ color = needed[Math.floor(Math.random()*needed.length)]; }
+  else { color = PALETTE[Math.floor(Math.random()*PALETTE.length)].c; }
+  drops.push({ x: 30+Math.random()*(W-60), y:-20, c:color, r:9+Math.random()*4, vy: fallSpeed+Math.random()*1.2, sway:Math.random()*6.28, swaySp:0.02+Math.random()*0.03 });
+  if(Math.random()<0.035){ // golden sun-drop: points
+    bonuses.push({ kind:'sun', x:30+Math.random()*(W-60), y:-20, r:14, vy:fallSpeed*0.8, t:0 });
+  }
+  if(Math.random()<0.02){ // rainbow: fills petals + free-catch burst
+    bonuses.push({ kind:'rainbow', x:30+Math.random()*(W-60), y:-20, r:16, vy:fallSpeed*0.7, t:0 });
+  }
+  if(Math.random()<0.015){ // moon: banks a shield
+    bonuses.push({ kind:'moon', x:30+Math.random()*(W-60), y:-20, r:13, vy:fallSpeed*0.75, t:0 });
+  }
+  if(Math.random()<0.012){ // storm cloud drifts across: catch for a burst
+    const dir = Math.random()<0.5?1:-1;
+    bonuses.push({ kind:'cloud', x: dir>0?-50:W+50, y:60+Math.random()*(H*0.3), r:20, vx:dir*(1.1+Math.random()), t:0 });
+  }
+  if(Math.random()<0.01){ // bee zips across: big points
+    const dir = Math.random()<0.5?1:-1;
+    bonuses.push({ kind:'bee', x: dir>0?-40:W+40, y:80+Math.random()*(H*0.4), r:9, vx:dir*(2.2+Math.random()*1.5), t:0 });
+  }
+}
+
+function addFloater(x,y,txt,col){ floaters.push({x,y,txt,col,life:60}); }
+
+function loop(){
+  ctx.clearRect(0,0,W,H);
+  drawDawnSky();
+  drawMtHood();
+  drawAmbientRain();
+  drawCity();
+  if(state==='play'){
+    // Option B: umbrella color auto-set to the next color the bouquet still needs
+    const needed = order.filter(o=>o.got<o.need);
+    if(needed.length) umbColor = needed[0].c;
+    if(freeCatch>0) freeCatch--;
+
+    // dawn timer — deliver before the sun fully rises
+    dawnTime++;
+    if(dawnTime>=dawnLimit){ gameOver(); }
+
+    spawnT++;
+    if(spawnT>=spawnRate){ spawnT=0; spawnDrop(); }
+
+    // update drops
+    for(let i=drops.length-1;i>=0;i--){
+      const d=drops[i]; d.y+=d.vy; d.sway+=d.swaySp; const dx=d.x+Math.sin(d.sway)*8;
+      drawDrop(dx,d.y,d.r,d.c);
+      // catch test
+      if(d.y>umb.y-14 && d.y<umb.y+18 && Math.abs(dx-umb.x)<umb.w/2){
+        // In free-catch burst, ANY drop fills the next needed petal. Otherwise must match an order color.
+        let match;
+        if(freeCatch>0){ match = order.find(o=>o.got<o.need); }
+        else { match = order.find(o=>o.c===d.c && o.got<o.need); }
+        if(match){ match.got++; score+=10; addFloater(dx,umb.y-20,'+10',match.c); renderOrder(); growFlower(); collectedThisLevel.push(match.c);
+          if(order.every(o=>o.got>=o.need)){ fillOrder(); } }
+        else if(freeCatch>0){ score+=5; addFloater(dx,umb.y-20,'+5','#bfe3ff'); }
+        else { score=Math.max(0,score-2); addFloater(dx,umb.y-20,'–','#fff'); }
+        drops.splice(i,1); updateHUD(); continue;
+      }
+      if(d.y>H+20){ // missed — no penalty, casual & relaxing
+        drops.splice(i,1);
+      }
+    }
+    // bonuses
+    for(let i=bonuses.length-1;i>=0;i--){
+      const b=bonuses[i];
+      // bee and cloud drift horizontally; sun/moon/rainbow fall
+      if(b.kind==='bee' || b.kind==='cloud'){ b.x+=b.vx; b.y+=Math.sin(b.t*3)*0.6; b.t+=0.06; }
+      else { b.y+=b.vy; b.t+=0.1; }
+      if(b.kind==='rainbow') drawRainbow(b.x,b.y,b.r);
+      else if(b.kind==='moon') drawMoon(b.x,b.y,b.r);
+      else if(b.kind==='cloud') drawCloud(b.x,b.y,b.r);
+      else if(b.kind==='bee') drawBee(b.x,b.y,b.t);
+      else drawSun(b.x,b.y,b.r,b.t);
+      const caught = b.y>umb.y-14 && b.y<umb.y+20 && Math.abs(b.x-umb.x)<umb.w/2;
+      if(caught){
+        if(b.kind==='rainbow'){ let filled=0; for(const o of order){ while(o.got<o.need && filled<3){ o.got++; filled++; growFlower(); } }
+          score+=20; addFloater(b.x,umb.y-24,'🌈 +'+filled+' petals','#fff'); renderOrder(); flash();
+          freeCatch=240; if(order.every(o=>o.got>=o.need)) fillOrder(); }
+        else if(b.kind==='moon'){ score+=20; dawnTime=Math.max(0,dawnTime-60*3); addFloater(b.x,umb.y-24,'🌙 +time','#cdd6ff'); flash(); }
+        else if(b.kind==='cloud'){ score+=15; freeCatch=180; addFloater(b.x,umb.y-24,'⚡ burst!','#bfe3ff'); flash(); }
+        else if(b.kind==='bee'){ score+=40; addFloater(b.x,umb.y-24,'🐝 +40','#ffd56b'); flash(); }
+        else { score+=25; addFloater(b.x,umb.y-24,'+25 ☀','#ffd56b'); flash(); }
+        bonuses.splice(i,1); updateHUD(); continue;
+      }
+      // off-screen cleanup (different per motion type)
+      if(b.kind==='bee'||b.kind==='cloud'){ if(b.x< -60 || b.x>W+60) bonuses.splice(i,1); }
+      else if(b.y>H+20) bonuses.splice(i,1);
+    }
+  }
+  // Frog delivery cutscene
+  if(state==='frog'){ updateFrog(); }
+  drawUmbrella(umb.x,umb.y,umb.w);
+  if(state==='play'){ drawFlowerMeter(); drawDawnMeter(); }
+  // floaters
+  for(let i=floaters.length-1;i>=0;i--){ const f=floaters[i]; f.y-=0.8; f.life--;
+    ctx.globalAlpha=Math.max(0,f.life/60); ctx.fillStyle=f.col; ctx.font='bold 20px Georgia';
+    ctx.textAlign='center'; ctx.fillText(f.txt,f.x,f.y); ctx.globalAlpha=1;
+    if(f.life<=0) floaters.splice(i,1); }
+  requestAnimationFrame(loop);
+}
+
+let ambient=[]; for(let i=0;i<46;i++){ ambient.push({x:Math.random(),y:Math.random(),s:0.4+Math.random()*1.2,c:PALETTE[i%PALETTE.length].c}); }
+
+// ---- City skyline: Portland Pearl District (level 1) ----
+// Brick warehouses, big multi-pane industrial windows, water towers,
+// some warm-lit windows, plus "tiny life": a cat, a flicker, a drifting curtain.
+let buildings=[], cityLife={};
+function buildCity(){
+  buildings=[];
+  const baseY = H-40;             // street line
+  let x = -20;
+  const brick = ['#7c3b2e','#8a4636','#6e3528','#934f3c','#5e2f25'];
+  while(x < W+20){
+    const w = 70 + Math.random()*70;
+    const h = 120 + Math.random()*180;
+    const b = { x, y: baseY-h, w, h, c: brick[Math.floor(Math.random()*brick.length)],
+      tower: Math.random()<0.3, windows: [] };
+    // window grid — big industrial panes
+    const cols = Math.max(2, Math.floor(w/26));
+    const rows = Math.max(2, Math.floor(h/38));
+    const mx = (w-(cols*18))/(cols+1);
+    const my = 14;
+    for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+      const wx = b.x + mx + c*(18+mx);
+      const wy = b.y + my + r*32;
+      if(wy > baseY-24) continue;
+      b.windows.push({ x:wx, y:wy, lit: Math.random()<0.4 });
+    }
+    buildings.push(b);
+    x += w + 6 + Math.random()*10;
+  }
+  // window boxes: a few buildings get a planter under a window (always present)
+  buildings.forEach(b=>{ if(Math.random()<0.5 && b.windows.length){
+    const wn = b.windows[Math.floor(Math.random()*b.windows.length)];
+    b.box = { x: wn.x-2, y: wn.y+24 };
+  }});
+  // assign tiny life to specific lit windows
+  const litAll = [];
+  buildings.forEach((b,bi)=> b.windows.forEach((w,wi)=>{ if(w.lit) litAll.push([bi,wi]); }));
+  function pick(){ return litAll.length? litAll[Math.floor(Math.random()*litAll.length)] : null; }
+  cityLife = { cat: pick(), flicker: pick(), curtain: pick(), t:0 };
+}
+function drawCity(){
+  const baseY = H-40;
+  for(const b of buildings){
+    ctx.fillStyle=b.c; ctx.fillRect(b.x,b.y,b.w,b.h);
+    // roofline shade
+    ctx.fillStyle='rgba(0,0,0,0.18)'; ctx.fillRect(b.x,b.y,b.w,6);
+    if(b.tower){ // rooftop water tower (Pearl District signature)
+      const tw=22, tx=b.x+b.w*0.5-tw/2, ty=b.y-26;
+      ctx.fillStyle='#3a2a26'; ctx.fillRect(tx+2,ty+14,tw-4,12);   // legs area
+      ctx.fillStyle='#5a4038'; ctx.fillRect(tx,ty,tw,16);          // tank
+      ctx.beginPath(); ctx.moveTo(tx-2,ty); ctx.lineTo(tx+tw/2,ty-8); ctx.lineTo(tx+tw+2,ty); ctx.fill(); // cap
+    }
+  }
+  // windows (static — no animation)
+  buildings.forEach((b,bi)=> b.windows.forEach((w,wi)=>{
+    let lit = w.lit, warm = '#ffcf7a';
+    ctx.fillStyle = lit ? warm : 'rgba(20,28,34,0.55)';
+    ctx.fillRect(w.x,w.y,18,24);
+    // panes
+    ctx.strokeStyle='rgba(20,15,20,0.5)'; ctx.lineWidth=1;
+    ctx.strokeRect(w.x,w.y,18,24);
+    ctx.beginPath(); ctx.moveTo(w.x+9,w.y); ctx.lineTo(w.x+9,w.y+24);
+    ctx.moveTo(w.x,w.y+12); ctx.lineTo(w.x+18,w.y+12); ctx.stroke();
+    // cat silhouette
+    if(cityLife.cat && cityLife.cat[0]===bi && cityLife.cat[1]===wi && lit){
+      ctx.fillStyle='#2a1a12';
+      const cx=w.x+9, cy=w.y+24;
+      ctx.beginPath(); ctx.arc(cx,cy-5,4,Math.PI,0); // body hump
+      ctx.fill();
+      ctx.beginPath(); ctx.arc(cx+3,cy-7,2.5,0,6.28); ctx.fill(); // head
+      ctx.beginPath(); ctx.moveTo(cx+1.5,cy-9); ctx.lineTo(cx+2.5,cy-12); ctx.lineTo(cx+3.5,cy-9); ctx.fill(); // ear
+      ctx.beginPath(); ctx.moveTo(cx+4.5,cy-9); ctx.lineTo(cx+5.5,cy-12); ctx.lineTo(cx+6,cy-9); ctx.fill(); // ear
+      ctx.strokeStyle='#2a1a12'; ctx.lineWidth=1.5; ctx.beginPath();
+      ctx.moveTo(cx-4,cy-4); ctx.quadraticCurveTo(cx-8,cy-8,cx-6,cy-12); ctx.stroke(); // tail
+    }
+    // curtain (static)
+    if(cityLife.curtain && cityLife.curtain[0]===bi && cityLife.curtain[1]===wi && lit){
+      ctx.fillStyle='rgba(255,240,210,0.4)';
+      ctx.beginPath(); ctx.moveTo(w.x,w.y);
+      ctx.quadraticCurveTo(w.x+6,w.y+12, w.x+4,w.y+24);
+      ctx.lineTo(w.x,w.y+24); ctx.closePath(); ctx.fill();
+    }
+  }));
+  // ground layers between buildings and foreground: sidewalk, bike lane, street
+  const swTop = baseY;            // sidewalk starts at building base
+  ctx.fillStyle='#9a958c'; ctx.fillRect(0, swTop, W, 14);          // sidewalk (light grey)
+  ctx.strokeStyle='rgba(0,0,0,0.15)'; ctx.lineWidth=1;            // sidewalk seams
+  for(let sx=0;sx<W;sx+=40){ ctx.beginPath(); ctx.moveTo(sx,swTop); ctx.lineTo(sx,swTop+14); ctx.stroke(); }
+  ctx.fillStyle='#3a5e4a'; ctx.fillRect(0, swTop+14, W, 10);       // green bike lane
+  ctx.fillStyle='#fff'; ctx.font='8px Georgia';
+  ctx.fillStyle='rgba(255,255,255,0.5)';                          // bike-lane dashes
+  for(let sx=6;sx<W;sx+=34){ ctx.fillRect(sx, swTop+18, 12, 2); }
+  ctx.fillStyle='#26241f'; ctx.fillRect(0, swTop+24, W, 16);       // street (dark) to bottom band
+  // window boxes (always present baseline charm)
+  const boxCols=['#e84393','#ffb22e','#3fae5a','#6a4ec9'];
+  buildings.forEach(b=>{ if(b.box){
+    ctx.fillStyle='#4a3228'; ctx.fillRect(b.box.x, b.box.y, 22, 5);
+    for(let i=0;i<3;i++){ ctx.fillStyle=boxCols[(i+b.box.x|0)%boxCols.length];
+      ctx.beginPath(); ctx.arc(b.box.x+5+i*6, b.box.y-1, 2.5, 0, 6.28); ctx.fill(); }
+  }});
+  // street flowers — grow along the sidewalk as bouquets are completed
+  drawStreetFlowers(baseY);
+}
+
+// street flowers accumulate permanently as the player completes bouquets
+let streetFlowers=[];
+function addStreetFlower(){
+  const cols=['#e84393','#ffb22e','#3fae5a','#6a4ec9','#e83b2e','#3a7bd5'];
+  streetFlowers.push({ x: 20+Math.random()*(W-40), c: cols[Math.floor(Math.random()*cols.length)],
+    h: 16+Math.random()*14, grow:0 });
+}
+function drawStreetFlowers(baseY){
+  for(const f of streetFlowers){
+    if(f.grow<1) f.grow+=0.04;                     // little grow-in animation
+    const h=f.h*Math.min(1,f.grow), fx=f.x, fy=baseY+24;
+    ctx.strokeStyle='#2f7d3a'; ctx.lineWidth=2; ctx.beginPath();
+    ctx.moveTo(fx,fy); ctx.lineTo(fx,fy-h); ctx.stroke();
+    // petals
+    ctx.fillStyle=f.c;
+    for(let i=0;i<5;i++){ const a=i/5*6.28; ctx.beginPath();
+      ctx.ellipse(fx+Math.cos(a)*4, fy-h+Math.sin(a)*4, 3, 4.5, a, 0, 6.28); ctx.fill(); }
+    ctx.fillStyle='#ffd56b'; ctx.beginPath(); ctx.arc(fx,fy-h,2.6,0,6.28); ctx.fill();
+  }
+}
+function drawDawnSky(){
+  // grey-blue dawn, soft pink/orange sunrise glow low on the horizon
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,   '#3a4258');   // cool grey-blue up top
+  g.addColorStop(0.45,'#5b6276');
+  g.addColorStop(0.68,'#8f8298');   // mauve transition
+  g.addColorStop(0.82,'#d99a73');   // warm sunrise band
+  g.addColorStop(0.92,'#f3b986');   // peachy glow near horizon
+  g.addColorStop(1,   '#ffd9a0');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // soft sun glow rising at horizon (left-of-center)
+  const gx=W*0.32, gy=H*0.62;
+  const rg=ctx.createRadialGradient(gx,gy,0,gx,gy,H*0.4);
+  rg.addColorStop(0,'rgba(255,228,170,0.55)'); rg.addColorStop(1,'rgba(255,228,170,0)');
+  ctx.fillStyle=rg; ctx.fillRect(0,0,W,H);
+}
+
+function drawMtHood(){
+  // far horizon line where mountains/forest sit (behind the city)
+  const horizon = H*0.60;
+  // Mt Hood — snowy peak, slightly right of the sun glow
+  const mx=W*0.62, base=horizon, peakH=H*0.20, halfW=W*0.22;
+  ctx.fillStyle='#6f7385';
+  ctx.beginPath(); ctx.moveTo(mx-halfW, base);
+  ctx.lineTo(mx, base-peakH); ctx.lineTo(mx+halfW, base); ctx.closePath(); ctx.fill();
+  // snow cap
+  ctx.fillStyle='#e9ecf2';
+  ctx.beginPath(); ctx.moveTo(mx, base-peakH);
+  ctx.lineTo(mx-peakH*0.42, base-peakH*0.45);
+  ctx.lineTo(mx-peakH*0.22, base-peakH*0.6);
+  ctx.lineTo(mx-peakH*0.05, base-peakH*0.4);
+  ctx.lineTo(mx+peakH*0.18, base-peakH*0.58);
+  ctx.lineTo(mx+peakH*0.45, base-peakH*0.42);
+  ctx.closePath(); ctx.fill();
+  // distant forest line — a band of little evergreen silhouettes
+  ctx.fillStyle='#2f3f3a';
+  ctx.fillRect(0, horizon-2, W, 14);
+  for(let x=-6; x<W+6; x+=14){
+    const th=8+((x*7)%5);
+    ctx.beginPath(); ctx.moveTo(x, horizon); ctx.lineTo(x+7, horizon-th); ctx.lineTo(x+14, horizon); ctx.closePath(); ctx.fill();
+  }
+}
+
+
+function drawAmbientRain(){ ctx.globalAlpha=0.22; ambient.forEach(a=>{
+  ctx.fillStyle=a.c; const x=a.x*W,y=a.y*H; ctx.beginPath(); ctx.ellipse(x,y,2.2,5,0,0,6.28); ctx.fill(); }); ctx.globalAlpha=1; }
+
+function drawDrop(x,y,r,c){ ctx.fillStyle=c; ctx.beginPath();
+  ctx.moveTo(x,y-r*1.5); ctx.bezierCurveTo(x+r,y-r*0.4,x+r,y+r*0.6,x,y+r); ctx.bezierCurveTo(x-r,y+r*0.6,x-r,y-r*0.4,x,y-r*1.5); ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.beginPath(); ctx.ellipse(x-r*0.3,y-r*0.2,r*0.22,r*0.32,0,0,6.28); ctx.fill(); }
+
+function drawSun(x,y,r,t){ ctx.save(); ctx.translate(x,y); ctx.rotate(t);
+  ctx.fillStyle='#ffd56b'; for(let i=0;i<8;i++){ ctx.rotate(6.28/8); ctx.fillRect(-1.5,-r-5,3,6); }
+  ctx.beginPath(); ctx.arc(0,0,r*0.7,0,6.28); ctx.fillStyle='#ffb22e'; ctx.fill();
+  ctx.beginPath(); ctx.arc(0,0,r*0.45,0,6.28); ctx.fillStyle='#fff0c0'; ctx.fill(); ctx.restore(); }
+
+function drawRainbow(x,y,r){
+  // concentric arcs in the palette colors — a little rainbow drop
+  const cols=['#e83b2e','#ffb22e','#c9d44e','#3fae5a','#3a7bd5','#6a4ec9'];
+  ctx.lineWidth=2.4; ctx.lineCap='round';
+  for(let i=0;i<cols.length;i++){ ctx.strokeStyle=cols[i];
+    ctx.beginPath(); ctx.arc(x,y+r*0.5,r-i*2.4,Math.PI,0); ctx.stroke(); }
+  // sparkle
+  ctx.fillStyle='#fff7e8'; ctx.beginPath(); ctx.arc(x+r*0.6,y-r*0.2,1.8,0,6.28); ctx.fill();
+}
+
+function drawMoon(x,y,r){
+  // painterly crescent moon, soft
+  ctx.fillStyle='#e8ecff'; ctx.beginPath(); ctx.arc(x,y,r,0,6.28); ctx.fill();
+  ctx.fillStyle='#5b6276'; ctx.beginPath(); ctx.arc(x+r*0.45,y-r*0.2,r*0.92,0,6.28); ctx.fill();
+  // soft glow
+  ctx.strokeStyle='rgba(205,214,255,0.4)'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(x,y,r+3,0,6.28); ctx.stroke();
+}
+
+function drawCloud(x,y,r){
+  // soft rounded storm cloud — overlapping puffs with a flat-ish soft base
+  ctx.save();
+  // soft shadow underside
+  ctx.fillStyle='#5a6070';
+  const puffs=[[-r*0.85,r*0.1,r*0.55],[-r*0.3,-r*0.15,r*0.7],[r*0.4,-r*0.1,r*0.6],[r*0.9,r*0.12,r*0.5]];
+  ctx.beginPath();
+  for(const [px,py,pr] of puffs){ ctx.moveTo(x+px+pr,y+py); ctx.arc(x+px,y+py,pr,0,6.28); }
+  ctx.fill();
+  // lighter top layer for a painterly two-tone
+  ctx.fillStyle='#7e8494';
+  const tops=[[-r*0.3,-r*0.3,r*0.5],[r*0.35,-r*0.25,r*0.42]];
+  ctx.beginPath();
+  for(const [px,py,pr] of tops){ ctx.moveTo(x+px+pr,y+py); ctx.arc(x+px,y+py,pr,0,6.28); }
+  ctx.fill();
+  // lightning bolt — clean zigzag
+  ctx.fillStyle='#ffe27a'; ctx.strokeStyle='#e0b840'; ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.moveTo(x+1, y+r*0.5);
+  ctx.lineTo(x-5, y+r*1.25);
+  ctx.lineTo(x-0.5, y+r*1.25);
+  ctx.lineTo(x-5, y+r*2.0);
+  ctx.lineTo(x+6, y+r*1.05);
+  ctx.lineTo(x+1.5, y+r*1.05);
+  ctx.lineTo(x+6, y+r*0.5);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
+function drawBee(x,y,t){
+  ctx.save(); ctx.translate(x,y);
+  // wings (flutter)
+  const flap = Math.sin(t*8)*0.4;
+  ctx.fillStyle='rgba(255,255,255,0.7)';
+  ctx.save(); ctx.rotate(-0.6+flap); ctx.beginPath(); ctx.ellipse(-2,-7,4,7,0,0,6.28); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.rotate(0.6-flap); ctx.beginPath(); ctx.ellipse(2,-7,4,7,0,0,6.28); ctx.fill(); ctx.restore();
+  // body
+  ctx.fillStyle='#ffce3a'; ctx.beginPath(); ctx.ellipse(0,0,9,6,0,0,6.28); ctx.fill();
+  ctx.strokeStyle='#2a1a12'; ctx.lineWidth=2;
+  for(let i=-1;i<=1;i++){ ctx.beginPath(); ctx.moveTo(i*4,-5); ctx.lineTo(i*4,5); ctx.stroke(); }
+  // face
+  ctx.fillStyle='#2a1a12'; ctx.beginPath(); ctx.arc(7,-1,1.4,0,6.28); ctx.fill();
+  ctx.restore();
+}
+
+function updateFrog(){
+  frog.t++;
+  const midX = W*0.5, rideY = H-46;   // ride along the sidewalk/bike lane
+  // dim the scene a touch and show a banner
+  ctx.fillStyle='rgba(26,15,31,0.35)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff7e8'; ctx.font='600 22px Georgia'; ctx.textAlign='center';
+  if(frog.phase==='in'){
+    frog.x += 1.8;
+    if(frog.x>=midX){ frog.x=midX; frog.phase='wave'; frog.t=0; }
+    ctx.fillText('Off to deliver!', W/2, H*0.4);
+  } else if(frog.phase==='wave'){
+    ctx.fillText('Off to deliver!', W/2, H*0.4);
+    if(frog.t>130){ frog.phase='out'; }
+  } else if(frog.phase==='out'){
+    frog.x += 2.2;
+    ctx.fillText('Level '+(level+1)+'!', W/2, H*0.4);
+    if(frog.x>W+90){ frog.active=false; nextLevel(); return; }
+  }
+  drawFrogBike(frog.x, rideY, frog.phase==='wave', frog.t);
+}
+
+function drawFrogBike(x, y, waving, t){
+  ctx.save(); ctx.translate(x,y);
+  const green='#5fae4a', dark='#2f6b2a';
+  // ---- wheels ----
+  ctx.strokeStyle='#1a1410'; ctx.lineWidth=3;
+  for(const wx of [-20,20]){ ctx.beginPath(); ctx.arc(wx,0,11,0,6.28); ctx.stroke(); }
+  // frame
+  ctx.strokeStyle='#c0392b'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(-20,0); ctx.lineTo(0,0); ctx.lineTo(20,0);
+  ctx.moveTo(0,0); ctx.lineTo(-6,-14); ctx.lineTo(10,-14); ctx.moveTo(-6,-14); ctx.lineTo(-20,0); ctx.stroke();
+  // handlebar + seat
+  ctx.beginPath(); ctx.moveTo(10,-14); ctx.lineTo(16,-18); ctx.moveTo(-6,-14); ctx.lineTo(-9,-17); ctx.stroke();
+  if(frog.style===1){
+    // ---- flower CART/trailer towed behind ----
+    ctx.strokeStyle='#1a1410'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(-44,2,8,0,6.28); ctx.stroke();
+    ctx.fillStyle='#8a5a3c'; ctx.fillRect(-58,-14,28,16);
+    ctx.strokeStyle='#5a3a26'; ctx.lineWidth=2; ctx.strokeRect(-58,-14,28,16);
+    ctx.beginPath(); ctx.moveTo(-30,-2); ctx.lineTo(-20,0); ctx.stroke(); // hitch
+    drawBouquet(-44,-16);
+  }
+  // ---- frog rider ----
+  ctx.fillStyle=green; ctx.strokeStyle=dark; ctx.lineWidth=1.5;
+  // body
+  ctx.beginPath(); ctx.ellipse(0,-22,8,9,0,0,6.28); ctx.fill(); ctx.stroke();
+  // head
+  ctx.beginPath(); ctx.arc(2,-33,6,0,6.28); ctx.fill(); ctx.stroke();
+  // eyes (big froggy)
+  ctx.fillStyle=green; ctx.beginPath(); ctx.arc(-1,-39,3,0,6.28); ctx.arc(5,-39,3,0,6.28); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(-1,-39,1.4,0,6.28); ctx.arc(5,-39,1.4,0,6.28); ctx.fill();
+  ctx.fillStyle='#1a1410'; ctx.beginPath(); ctx.arc(-1,-39,0.7,0,6.28); ctx.arc(5,-39,0.7,0,6.28); ctx.fill();
+  // smile
+  ctx.strokeStyle=dark; ctx.lineWidth=1.2; ctx.beginPath(); ctx.arc(2,-32,3,0.1,Math.PI-0.1); ctx.stroke();
+  // legs pedalling
+  ctx.strokeStyle=green; ctx.lineWidth=3;
+  const pedal=Math.sin(t*0.25)*3;
+  ctx.beginPath(); ctx.moveTo(0,-14); ctx.lineTo(2,-2+pedal); ctx.stroke();
+  // waving arm or holding handlebar
+  ctx.strokeStyle=green; ctx.lineWidth=3;
+  if(waving){ const wv=Math.sin(t*0.5)*0.5;
+    ctx.save(); ctx.translate(-4,-26); ctx.rotate(-1.1+wv);
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,-12); ctx.stroke(); ctx.restore();
+  } else { ctx.beginPath(); ctx.moveTo(-2,-24); ctx.lineTo(12,-16); ctx.stroke(); }
+  ctx.restore();
+}
+
+function drawBouquet(x,y){
+  // a little cluster from the colors collected this level (fallback to palette)
+  const cols = collectedThisLevel.length ? collectedThisLevel : PALETTE.map(p=>p.c);
+  for(let i=0;i<6;i++){ const c=cols[(i*3)%cols.length];
+    ctx.fillStyle=c; ctx.beginPath();
+    ctx.arc(x-6+ (i%3)*6, y-(Math.floor(i/3))*5, 3, 0, 6.28); ctx.fill(); }
+  // stems
+  ctx.strokeStyle='#2f7d3a'; ctx.lineWidth=1; ctx.beginPath();
+  ctx.moveTo(x,y); ctx.lineTo(x,y+8); ctx.stroke();
+}
+
+function drawUmbrella(x,y,w){
+  const r=w/2;
+  // shaft with a J-hook handle at the bottom
+  ctx.strokeStyle='#e8c9a0'; ctx.lineWidth=6; ctx.lineCap='round';
+  const hookY = y + (H - y) * 0.62;   // where the hand grips
+  ctx.beginPath(); ctx.moveTo(x,y+4); ctx.lineTo(x,hookY+30);
+  // J curl
+  ctx.quadraticCurveTo(x, hookY+46, x-14, hookY+44);
+  ctx.quadraticCurveTo(x-26, hookY+42, x-22, hookY+30);
+  ctx.stroke();
+  // free-catch burst: rainbow glow around the canopy
+  if(freeCatch>0){
+    ctx.save(); ctx.globalAlpha=0.5*(0.6+0.4*Math.sin(Date.now()/90));
+    const cols=['#e83b2e','#ffb22e','#3fae5a','#3a7bd5','#6a4ec9'];
+    ctx.lineWidth=4;
+    for(let i=0;i<cols.length;i++){ ctx.strokeStyle=cols[i];
+      ctx.beginPath(); ctx.arc(x,y,r+4+i*3,Math.PI,0); ctx.stroke(); }
+    ctx.restore(); }
+  // classic single-color domed canopy (Option B: color = next needed bouquet color)
+  // Quadratic peak sits at the midpoint height of the control point, so the
+  // real visible top is y - r*0.7. Anchor the tip and ribs to that.
+  const ctrlY = y - r*1.4;            // control point (pulls the curve up)
+  const apex = y - r*0.7;             // actual visible top of the dome
+  ctx.fillStyle=umbColor;
+  ctx.beginPath(); ctx.moveTo(x-r,y);
+  ctx.quadraticCurveTo(x, ctrlY, x+r, y);  // dome curve
+  // scalloped lower edge (three little bumps)
+  const bumps=3, bw=w/bumps;
+  for(let i=bumps-1;i>=0;i--){ const sx=x-r+i*bw; ctx.quadraticCurveTo(sx+bw/2, y+8, sx, y); }
+  ctx.closePath(); ctx.fill();
+  // ribs — from each scallop valley up toward the apex, staying inside the dome
+  ctx.strokeStyle='rgba(42,21,48,0.22)'; ctx.lineWidth=1.2;
+  for(let i=1;i<bumps;i++){ const rx=x-r+i*bw; ctx.beginPath(); ctx.moveTo(rx,y-1); ctx.lineTo(x, apex+3); ctx.stroke(); }
+  // glossy highlight
+  ctx.fillStyle='rgba(255,255,255,0.16)';
+  ctx.beginPath(); ctx.ellipse(x-r*0.35,y-r*0.32,r*0.18,r*0.24,0.3,0,6.28); ctx.fill();
+  // ferrule (tip) — short, sitting right on the visible apex
+  ctx.strokeStyle='#caa977'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(x,apex); ctx.lineTo(x,apex-6); ctx.stroke();
+  // three-finger cartoon hand reaching straight up to grip the shaft
+  drawHand(x, hookY);
+}
+
+function drawHand(x, gy){
+  // arm reaching straight up from the bottom
+  ctx.strokeStyle='#5a4a6e'; ctx.lineWidth=15; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(x, H); ctx.lineTo(x, gy+14); ctx.stroke();
+  // rounded palm
+  ctx.fillStyle='#ffd9a8'; ctx.strokeStyle='#2a1a12'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.ellipse(x, gy+8, 11, 10, 0, 0, 6.28); ctx.fill(); ctx.stroke();
+  // three simple fingers curling over the shaft (Simpsons-style)
+  ctx.lineCap='round';
+  for(let i=-1;i<=1;i++){
+    ctx.fillStyle='#ffd9a8'; ctx.strokeStyle='#2a1a12'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.ellipse(x+i*6, gy-1, 4, 7, 0, 0, 6.28); ctx.fill(); ctx.stroke();
+  }
+  // thumb across the front
+  ctx.fillStyle='#ffd9a8'; ctx.beginPath(); ctx.ellipse(x-9, gy+6, 4, 6, -0.5, 0, 6.28); ctx.fill(); ctx.stroke();
+}
+
+function flash(){ const f=document.getElementById('flash'); f.style.transition='none'; f.style.opacity='1';
+  requestAnimationFrame(()=>{ f.style.transition='opacity 0.5s'; f.style.opacity='0'; }); }
+
+function growFlower(){
+  flowerPetals++;
+  if(flowerPetals > PETALS_PER){ // full bloom -> bonus points + a little more morning
+    flowerPetals=0; bloomPulse=1; score+=50; dawnTime=Math.max(0,dawnTime-60*3);
+    addFloater(W-42, 120, 'BLOOM! +50', '#ffd56b'); flash(); updateHUD();
+  }
+}
+
+function drawFlowerMeter(){
+  // compact flower-head meter at top-right, under the score
+  const cx = W-40, cy = 96, R = 16;
+  // ghost outline of full flower
+  for(let i=0;i<PETALS_PER;i++){ const a=(i/PETALS_PER)*6.28 - 1.57;
+    ctx.fillStyle='rgba(255,255,255,0.12)';
+    ctx.beginPath(); ctx.ellipse(cx+Math.cos(a)*R, cy+Math.sin(a)*R, 6, 9, a, 0, 6.28); ctx.fill(); }
+  // filled petals so far
+  const pulse = bloomPulse>0 ? 1+bloomPulse*0.3 : 1;
+  for(let i=0;i<Math.min(flowerPetals,PETALS_PER);i++){ const a=(i/PETALS_PER)*6.28 - 1.57;
+    ctx.fillStyle= PALETTE[i%PALETTE.length].c;
+    ctx.save(); ctx.translate(cx+Math.cos(a)*R*pulse, cy+Math.sin(a)*R*pulse); ctx.rotate(a);
+    ctx.beginPath(); ctx.ellipse(0,0,6,9,0,0,6.28); ctx.fill();
+    ctx.strokeStyle='rgba(42,21,48,0.25)'; ctx.lineWidth=1; ctx.stroke(); ctx.restore(); }
+  // center blooms last
+  if(flowerPetals>=PETALS_PER){ ctx.fillStyle='#ffd56b'; ctx.beginPath(); ctx.arc(cx,cy,7*pulse,0,6.28); ctx.fill();
+    ctx.fillStyle='#ffb22e'; ctx.beginPath(); ctx.arc(cx,cy,4*pulse,0,6.28); ctx.fill(); }
+  else { ctx.fillStyle='rgba(255,213,107,0.4)'; ctx.beginPath(); ctx.arc(cx,cy,5,0,6.28); ctx.fill(); }
+  if(bloomPulse>0) bloomPulse=Math.max(0,bloomPulse-0.04);
+  // bloom count beneath (each full flower = bonus points)
+  ctx.fillStyle='#fff7e8'; ctx.font='12px Georgia'; ctx.textAlign='center';
+  ctx.fillText('blooms', cx, cy+R+16);
+}
+
+function drawDawnMeter(){
+  // a celestial body arcing across the top — moon early, sun after halfway
+  const frac = Math.min(1, dawnTime/dawnLimit);   // 0 = night, 1 = dawn breaks
+  const cx=W*0.5, top=18, arcW=W*0.34, arcH=26;
+  // arc track
+  ctx.strokeStyle='rgba(255,247,232,0.25)'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.ellipse(cx, top+arcH, arcW/2, arcH, 0, Math.PI, 0); ctx.stroke();
+  // position along the arc
+  const a = Math.PI - frac*Math.PI;
+  const sx = cx + Math.cos(a)*(arcW/2), sy = (top+arcH) - Math.sin(a)*arcH;
+  if(frac < 0.5){
+    // ---- MOON (first half) ----
+    ctx.fillStyle='#e8ecff'; ctx.beginPath(); ctx.arc(sx,sy,8,0,6.28); ctx.fill();
+    // crescent shadow, deeper at the start, waning toward the middle
+    const shade = 0.6 + (0.5-frac)*0.8;   // how much crescent
+    ctx.fillStyle='#3a4258';
+    ctx.beginPath(); ctx.arc(sx+8*shade*0.5, sy-2, 8, 0, 6.28); ctx.fill();
+  } else {
+    // ---- SUN (second half), warms as dawn nears ----
+    const warm = frac>0.78;
+    ctx.fillStyle = warm ? '#ffb22e' : '#ffe9c0';
+    ctx.beginPath(); ctx.arc(sx, sy, 8, 0, 6.28); ctx.fill();
+    if(frac>0.6){ // rays grow as morning approaches
+      ctx.strokeStyle='rgba(255,178,46,0.6)'; ctx.lineWidth=1.5;
+      const ray = 10 + (frac-0.6)*10;
+      for(let i=0;i<8;i++){ const ra=i/8*6.28; ctx.beginPath();
+        ctx.moveTo(sx+Math.cos(ra)*10, sy+Math.sin(ra)*10);
+        ctx.lineTo(sx+Math.cos(ra)*ray, sy+Math.sin(ra)*ray); ctx.stroke(); }
+    }
+  }
+  ctx.fillStyle='rgba(255,247,232,0.7)'; ctx.font='10px Georgia'; ctx.textAlign='center';
+  ctx.fillText('deliver before dawn', cx, top+arcH+14);
+}
+
+function fillOrder(){ ordersFilled++; levelProgress++; score+=30; addFloater(umb.x,umb.y-40,'BOUQUET! +30','#ffd56b'); flash();
+  addStreetFlower(); addStreetFlower();   // the street blooms a little more each bouquet
+  dawnTime=Math.max(0, dawnTime-60*4);    // each bouquet buys ~4s more morning light
+  if(levelProgress>=levelQuota){ startFrogDelivery(); return; }
+  fallSpeed+=0.25; spawnRate=Math.max(26, spawnRate-3); newOrder(); updateHUD(); }
+
+function startFrogDelivery(){
+  state='frog';
+  frog.active=true; frog.phase='in'; frog.x=-90; frog.t=0;
+  drops=[]; bonuses=[];   // clear the field for the cutscene
+}
+function nextLevel(){
+  level++; levelProgress=0; levelQuota=3+level;   // each level needs a few more
+  // fresh dawn for the new level; pace creeps up slightly
+  dawnTime=0; dawnLimit=Math.max(60*32, 60*45 - level*60*1.5);  // a touch less time each level
+  fallSpeed=2.4+level*0.2; spawnRate=Math.max(30, 52-level*2);
+  streetFlowers=[]; collectedThisLevel=[];
+  buildCity();           // fresh skyline for the new level
+  newOrder(); updateHUD(); state='play';
+}
+
+function gameOver(){ state='over'; document.getElementById('overTitle').textContent='Dawn breaks';
+  document.getElementById('overMsg').textContent=`The sun came up over level ${level}. You arranged ${ordersFilled} bouquet${ordersFilled===1?'':'s'} and scored ${score} before the morning light. The shop is open!`;
+  document.getElementById('overPanel').style.display='flex'; }
+
+// input
+function moveTo(clientX){ const r=cv.getBoundingClientRect(); umb.x=Math.max(umb.w/2, Math.min(W-umb.w/2, clientX-r.left)); }
+cv.addEventListener('mousemove', e=>{ if(state==='play') moveTo(e.clientX); });
+cv.addEventListener('touchmove', e=>{ if(state==='play'){ e.preventDefault(); moveTo(e.touches[0].clientX); } }, {passive:false});
+cv.addEventListener('touchstart', e=>{ if(state==='play'){ e.preventDefault(); moveTo(e.touches[0].clientX); } }, {passive:false});
+let keyL=false,keyR=false;
+document.addEventListener('keydown',e=>{ if(e.key==='ArrowLeft')keyL=true; if(e.key==='ArrowRight')keyR=true; });
+document.addEventListener('keyup',e=>{ if(e.key==='ArrowLeft')keyL=false; if(e.key==='ArrowRight')keyR=false; });
+setInterval(()=>{ if(state==='play'){ if(keyL)umb.x=Math.max(umb.w/2,umb.x-9); if(keyR)umb.x=Math.min(W-umb.w/2,umb.x+9); } },16);
+
+function start(){ resize(); reset(); state='play';
+  document.getElementById('startPanel').style.display='none';
+  document.getElementById('overPanel').style.display='none'; }
+document.getElementById('startBtn').onclick=start;
+document.getElementById('againBtn').onclick=start;
+
+umb.x=W/2; umb.y=H-70; buildCity(); loop();
+</script>
+</body>
+</html>
