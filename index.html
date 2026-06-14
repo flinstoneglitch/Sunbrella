@@ -159,11 +159,27 @@ function spawnDrop(){
 }
 
 function addFloater(x,y,txt,col){ floaters.push({x,y,txt,col,life:60}); }
+function drawWillamette(){
+  const riverTop = H * 0.68;
+  const riverBottom = H * 0.86;
+  const riverGrad = ctx.createLinearGradient(0, riverTop, 0, riverBottom);
+  riverGrad.addColorStop(0, '#4a90d9');
+  riverGrad.addColorStop(0.5, '#2e6db4');
+  riverGrad.addColorStop(1, '#1a4a8a');
+  ctx.fillStyle = riverGrad;
+  ctx.fillRect(0, riverTop, W, riverBottom - riverTop);
+  ctx.fillStyle = 'rgba(255,255,255,0.07)';
+  for(let rx=0; rx<W; rx+=18){
+    ctx.fillRect(rx, riverTop+4, 10, 2);
+    ctx.fillRect(rx+9, riverTop+12, 14, 2);
+  }
+}
 
 function loop(){
   ctx.clearRect(0,0,W,H);
   drawDawnSky();
   drawMtHood();
+ drawWillamette();
   drawAmbientRain();
   drawCity();
   if(state==='play'){
@@ -341,8 +357,8 @@ function drawCity(){
   }});
   // street flowers — grow along the sidewalk as bouquets are completed
  // Willamette River — behind buildings, below treeline
-const riverTop = H * 0.72;
-const riverBottom = H * 0.88;
+const riverTop = H * 0.58;
+const riverBottom = H * 0.72;
 const riverGrad = ctx.createLinearGradient(0, riverTop, 0, riverBottom);
 riverGrad.addColorStop(0, '#4a90d9');
 riverGrad.addColorStop(0.4, '#2e6db4');
