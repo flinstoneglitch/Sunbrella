@@ -160,8 +160,8 @@ function spawnDrop(){
 
 function addFloater(x,y,txt,col){ floaters.push({x,y,txt,col,life:60}); }
 function drawWillamette(){
-  const riverTop = H * 0.48;
-  const riverBottom = H * 0.65;
+  const riverTop = H * 0.50;
+  const riverBottom = H * 0.63;
   const riverGrad = ctx.createLinearGradient(0, riverTop, 0, riverBottom);
   riverGrad.addColorStop(0, '#4a90d9');
   riverGrad.addColorStop(0.5, '#2e6db4');
